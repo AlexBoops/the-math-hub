@@ -2451,6 +2451,17 @@
         "controls": "Coming Soon"
     },
     {
+        "name": "Minecraft 1.8.8 ONLINE",
+        "image": "/cdn/imgs/minecraft_1.12.webp",
+        "url": "/cdn/pc/eagler",
+        "tags": [],
+        "categories": [
+            "PC Games"
+        ],
+        "description": "Coming Soon",
+        "controls": "Coming Soon"
+    },
+    {
         "name": "Minesweeper",
         "image": "/cdn/imgs/minesweeper.webp",
         "url": "minesweeper",
