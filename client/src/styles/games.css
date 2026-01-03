@@ -66,7 +66,21 @@ header {
     border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
-.game-card img {
+.show-card {
+    width: 230px;
+    height: 340px;
+    border-radius: 15px;
+    position: relative;
+    overflow: hidden;
+    transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+    background: linear-gradient(135deg, rgba(15, 23, 42, 0.5), rgba(30, 41, 59, 0.5));
+    backdrop-filter: blur(20px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.game-card img,
+.show-card img {
+
     width: 100%;
     height: 100%;
     border-radius: 15px;
@@ -77,7 +91,8 @@ header {
     transition: all 0.2s ease;
 }
 
-.game-card h3 {
+.game-card h3,
+.show-card h3 {
     position: absolute;
     bottom: 20px;
     left: 50%;
@@ -119,19 +134,22 @@ header {
     transform: scale(1.1);
 }
 
-.game-card:hover {
+.game-card:hover,
+.show-card:hover {
     cursor: pointer;
     transform: translateY(-8px) scale(1.03);
     box-shadow: 0 15px 40px rgba(102, 126, 234, 0.4);
     border: 1px solid rgba(102, 126, 234, 0.3);
 }
 
-.game-card:hover h3 {
+.game-card:hover h3,
+.show-card:hover h3 {
     opacity: 1;
     transform: translateX(-50%) translateY(-5px);
 }
 
-.game-card:hover img {
+.game-card:hover img,
+.show-card:hover img {
     filter: brightness(60%) blur(2px);
     transform: scale(1.1);
 }
@@ -228,4 +246,15 @@ header {
 #content {
     margin-left: 70px;
     transition: margin-left 0.3s ease;
+}
+
+
+.grid-container {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, 280px);
+    gap: 20px;
+    padding: 20px;
+    justify-content: center;
+    align-items: start;
+
 }

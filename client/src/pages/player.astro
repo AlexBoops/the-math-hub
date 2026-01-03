@@ -1,0 +1,32 @@
+---
+import Layout from "../layouts/layout.astro";
+---
+
+<Layout title="Streaming - The Math Hub">
+	<iframe
+		src="/pages/bg.html"
+		frameborder="none"
+		class="fixed w-full h-full -z-10"></iframe>
+
+	<main class="pt-30 p-10 flex items-center justify-center mb-15">
+		<div id="c" class="w-full max-w-7xl h-146">
+			<div>
+				<select
+					id="provider"
+					class="rounded-xl bg-blue-900 text-white px-4 py-2 mb-5 w-full max-w-xs">
+					<option value="vf">VidFast</option>
+				</select>
+			</div>
+
+			<iframe
+				id="player-frame"
+				src=""
+				frameborder="no"
+				allowfullscreen
+				class="w-full h-full rounded-2xl">
+			</iframe>
+			<script src="../scripts/cloak"></script>
+			<script src="../scripts/player"></script>
+		</div>
+	</main>
+</Layout>

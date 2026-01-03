@@ -1,0 +1,59 @@
+---
+import Layout from "../layouts/layout.astro";
+---
+
+<Layout title="Streaming - The Math Hub">
+	<iframe
+		src="/pages/bg.html"
+		frameborder="none"
+		class="fixed w-full h-full -z-10"></iframe>
+
+	<main class="pt-30 flex">
+		<div id="con" class="flex-1">
+			<div
+				id="search-container"
+				class="w-full max-w-4xl mx-auto mb-8 flex justify-center px-4">
+				<div
+					id="searchbar"
+					class="glass w-full h-16 rounded-2xl flex items-center shadow-lg">
+					<img
+						src="/img/search.svg"
+						alt="Search Icon"
+						class="max-w-9 ml-5 mt-.5 opacity-70"
+					/>
+					<input
+						type="text"
+						id="searchInput"
+						placeholder="Search 1.2M+ Movies and TV Shows"
+						class="flex-grow h-full bg-transparent text-white placeholder-gray-400 text-lg rounded-2xl px-4 outline-none font-light"
+					/>
+					<button
+						id="s"
+						class="text-white hover:text-blue-500 hover:bg-transparent transition-all duration-200 px-5 bg-blue-900 cursor-pointer py-2 rounded-xl mr-2"
+						><h1>Find!</h1></button
+					>
+				</div>
+			</div>
+			<div id="cards">
+				<h1 class="text-white text-2xl font-bold mb-4 px-5 ml-19">
+					Top Movies
+				</h1>
+				<div id="top-movies" class="grid-container">
+					<!-- Streaming cards will be dynamically inserted here -->
+				</div>
+				<h1 class="text-white text-2xl font-bold mb-4 mt-8 px-5 ml-19">
+					Top TV Shows
+				</h1>
+				<div id="top-tv" class="grid-container">
+					<!-- Streaming cards will be dynamically inserted here -->
+				</div>
+
+				<h1 class="text-gray-300 text-2xl text-center mt-8 mb-8">
+					Tons more, just search!
+				</h1>
+			</div>
+		</div>
+		<script src="../scripts/cloak"></script>
+		<script src="../scripts/streaming"></script>
+	</main>
+</Layout>
