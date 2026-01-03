@@ -3,13 +3,39 @@
  * 
  * Proxies vidfast.pro through /video/* with full content rewriting
  * so the browser never sees the original domain.
+ * 
+ * OPTIMIZATIONS:
+ * - In-memory caching for rewritten content (LRU-like)
+ * - Response compression (Gzip/Brotli)
+ * - Pre-compiled Regex patterns
  */
+
+import { gzipSync, deflateSync, brotliCompressSync } from 'node:zlib';
+import { Buffer } from 'node:buffer';
 
 const TARGET_HOST = 'vidfast.pro';
 const TARGET_ORIGIN = `https://${TARGET_HOST}`;
 const PROXY_PATH = '/video';
 
-// Content types that need URL rewriting
+// --- CONFIGURATION ---
+const CACHE_TTL_MS = 60 * 1000;
+const MAX_CACHE_SIZE = 100;
+
+// --- PRE-COMPILED REGEX PATTERNS ---
+const REGEX_TARGET_PROTOCOL = new RegExp(`https?://${TARGET_HOST}`, 'gi');
+const REGEX_TARGET_NO_PROTOCOL = new RegExp(`//${TARGET_HOST}`, 'gi');
+const REGEX_HTML_ATTRS = /((?:src|href|action|srcset|poster|data-src|data-href)\s*=\s*["'])\/(?!video\/)([^"']*["'])/gi;
+const REGEX_NEXT_DOUBLE = /"(\/(?:_next|api|cdn-cgi|hezushon|tv|movie|watch)[^"]*)"/g;
+const REGEX_NEXT_SINGLE = /'(\/(?:_next|api|cdn-cgi|hezushon|tv|movie|watch)[^']*)'/g;
+const REGEX_PRELOAD = /(rel=["'](?:preload|prefetch|modulepreload)["'][^>]*href=["'])\/(?!video\/)([^"']+["'])/gi;
+const REGEX_PRELOAD_REVERSED = /(href=["'])\/(?!video\/)([^"']+["'][^>]*rel=["'](?:preload|prefetch|modulepreload)["'])/gi;
+const REGEX_SCRIPT_TAG = /(<script[^>]*>)([\s\S]*?)(<\/script>)/gi;
+const REGEX_CSS_URL = /url\(\s*["']?\/([^"')]+)["']?\s*\)/gi;
+const REGEX_JSON_URL = new RegExp(`"https?://${TARGET_HOST}`, 'gi');
+
+// NEW: Pattern to match internal paths in JSON/JS that need rewriting
+const REGEX_JSON_INTERNAL_PATHS = /"(\/(?:tv|movie|watch)\/[^"]*)"/g;
+
 const REWRITABLE_TYPES = [
     'text/html',
     'text/css',
@@ -18,297 +44,400 @@ const REWRITABLE_TYPES = [
     'application/json',
 ];
 
+// --- CACHE ---
+interface CacheEntry {
+    content: Buffer;
+    contentType: string;
+    encoding: 'br' | 'gzip' | 'deflate' | 'identity';
+    timestamp: number;
+    etag: string;
+}
+
+const responseCache = new Map<string, CacheEntry>();
+
+function getFromCache(key: string): CacheEntry | null {
+    const entry = responseCache.get(key);
+    if (!entry) return null;
+    if (Date.now() - entry.timestamp > CACHE_TTL_MS) {
+        responseCache.delete(key);
+        return null;
+    }
+    return entry;
+}
+
+function addToCache(key: string, entry: CacheEntry) {
+    if (responseCache.size >= MAX_CACHE_SIZE) {
+        const firstKey = responseCache.keys().next().value;
+        if (firstKey) responseCache.delete(firstKey);
+    }
+    responseCache.set(key, entry);
+}
+
+// --- IMPROVED INTERCEPTOR SCRIPT ---
 const INTERCEPTOR_SCRIPT = `
 <script>
 (function() {
-    console.log('[Vidfast Proxy] Initializing interceptor...');
-    const PROXY_BASE = '/video/ext/';
+    const PROXY_PATH = '/video';
+    const PROXY_EXT = '/video/ext/';
+    
+    // Paths that MUST go through the proxy
+    const PROXY_PATHS = ['/tv/', '/movie/', '/watch/', '/watch?', '/_next/', '/api/', '/cdn-cgi/', '/hezushon/'];
+    
+    function shouldProxyPath(path) {
+        if (!path) return false;
+        if (path.startsWith('/video/')) return false; // Already proxied
+        return PROXY_PATHS.some(function(p) { return path.startsWith(p); });
+    }
     
     function rewriteUrl(url) {
         if (!url) return url;
-        if (typeof url !== 'string') url = url.toString();
-        // Don't rewrite if already proxied or local
-        // We use window.location.origin to check for absolute local URLs
-        if (url.startsWith('/video/') || url.startsWith(window.location.origin + '/video/')) return url;
-        if (url.startsWith('/') && !url.startsWith('//')) return url; // Start with / but not //
+        if (typeof url !== 'string') url = String(url);
         
-        let target = url;
-        if (url.startsWith('//')) {
-            target = 'https:' + url;
-        } else if (!url.startsWith('http')) {
-            return url; // Relative path or other protocol
+        // Already proxied - don't touch
+        if (url.startsWith('/video/') || url.indexOf('/video/') !== -1) {
+            return url;
         }
         
-        // At this point target starts with http:// or https://
-        // Check if it's external (not our origin)
-        if (target.startsWith(window.location.origin)) return url;
-
-        // Convert https://domain.com/path -> /video/ext/https/domain.com/path
-        return PROXY_BASE + target.replace('://', '/');
+        // Root-relative paths (e.g., /tv/123, /movie/456)
+        if (url.charAt(0) === '/' && url.charAt(1) !== '/') {
+            if (shouldProxyPath(url)) {
+                return PROXY_PATH + url;
+            }
+            return url;
+        }
+        
+        // Protocol-relative URLs (//example.com/...)
+        if (url.startsWith('//')) {
+            return PROXY_EXT + 'https/' + url.substring(2);
+        }
+        
+        // Absolute URLs
+        if (url.startsWith('http://') || url.startsWith('https://')) {
+            try {
+                var parsed = new URL(url);
+                // Same origin - check if path needs proxying
+                if (parsed.origin === window.location.origin) {
+                    if (shouldProxyPath(parsed.pathname)) {
+                        return PROXY_PATH + parsed.pathname + parsed.search + parsed.hash;
+                    }
+                    return url;
+                }
+                // External URL - proxy it
+                return PROXY_EXT + url.replace('://', '/');
+            } catch(e) {
+                return url;
+            }
+        }
+        
+        return url;
     }
 
-    const originalFetch = window.fetch;
+    // --- FETCH INTERCEPT ---
+    var originalFetch = window.fetch;
     window.fetch = function(input, init) {
-        let newInput = input;
+        var newInput = input;
         if (typeof input === 'string') {
             newInput = rewriteUrl(input);
-        } else if (input instanceof Request) {
-            newInput = new Request(rewriteUrl(input.url), input);
+        } else if (input && typeof input.url === 'string') {
+            var newUrl = rewriteUrl(input.url);
+            if (newUrl !== input.url) {
+                newInput = new Request(newUrl, input);
+            }
         }
-        return originalFetch(newInput, init);
+        return originalFetch.call(window, newInput, init);
     };
 
-    const originalOpen = XMLHttpRequest.prototype.open;
-    XMLHttpRequest.prototype.open = function(method, url, ...args) {
-        return originalOpen.call(this, method, rewriteUrl(url), ...args);
+    // --- XHR INTERCEPT ---
+    var originalXhrOpen = XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open = function(method, url) {
+        var args = Array.prototype.slice.call(arguments);
+        args[1] = rewriteUrl(url);
+        return originalXhrOpen.apply(this, args);
     };
-    console.log('[Vidfast Proxy] Interceptor active');
-})();
+
+    // --- HISTORY API INTERCEPT ---
+    var originalPushState = history.pushState;
+    var originalReplaceState = history.replaceState;
+
+    history.pushState = function(state, unused, url) {
+        var newUrl = url ? rewriteUrl(String(url)) : url;
+        return originalPushState.call(history, state, unused, newUrl);
+    };
+
+    history.replaceState = function(state, unused, url) {
+        var newUrl = url ? rewriteUrl(String(url)) : url;
+        return originalReplaceState.call(history, state, unused, newUrl);
+    };
+    
+    // --- LOCATION INTERCEPT ---
+    try {
+        var originalAssign = location.assign.bind(location);
+        var originalReplace = location.replace.bind(location);
+        
+        location.assign = function(url) {
+            return originalAssign(rewriteUrl(url));
+        };
+        
+        location.replace = function(url) {
+            return originalReplace(rewriteUrl(url));
+        };
+    } catch(e) {}
+    
+    // --- WINDOW.OPEN INTERCEPT ---
+    var originalWindowOpen = window.open;
+    window.open = function(url, target, features) {
+        return originalWindowOpen.call(window, rewriteUrl(url), target, features);
+    };
+    
+    // --- CLICK HANDLER (Capture Phase) ---
+    document.addEventListener('click', function(e) {
+        var target = e.target;
+        // Walk up to find anchor tag
+        while (target && target.tagName !== 'A') {
+            target = target.parentElement;
+        }
+
+        if (target && target.href) {
+            try {
+                var url = new URL(target.href, window.location.origin);
+                // Only intercept same-origin navigations
+                if (url.origin === window.location.origin && shouldProxyPath(url.pathname)) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    e.stopImmediatePropagation();
+                    window.location.href = PROXY_PATH + url.pathname + url.search + url.hash;
+                    return false;
+                }
+            } catch(err) {}
+        }
+    }, true);
+    
+    // --- FORM SUBMIT INTERCEPT ---
+    document.addEventListener('submit', function(e) {
+        var form = e.target;
+        if (form && form.action) {
+            try {
+                var url = new URL(form.action, window.location.origin);
+                if (url.origin === window.location.origin && shouldProxyPath(url.pathname)) {
+                    form.action = PROXY_PATH + url.pathname + url.search;
+                }
+            } catch(err) {}
+        }
+    }, true);
+    
+    // --- POPSTATE HANDLER (Back/Forward buttons) ---
+    window.addEventListener('popstate', function(e) {
+        // If somehow we ended up at a non-proxied path, redirect
+        if (shouldProxyPath(window.location.pathname)) {
+            window.location.href = PROXY_PATH + window.location.pathname + window.location.search + window.location.hash;
+        }
+    });
+    
+    // --- MUTATION OBSERVER (Catch dynamically added links) ---
+    var observer = new MutationObserver(function(mutations) {
+        mutations.forEach(function(mutation) {
+            mutation.addedNodes.forEach(function(node) {
+                if (node.nodeType === 1) { // Element node
+                    // Check the node itself
+                    if (node.tagName === 'A' && node.href) {
+                        try {
+                            var url = new URL(node.href, window.location.origin);
+                            if (url.origin === window.location.origin && shouldProxyPath(url.pathname)) {
+                                node.href = PROXY_PATH + url.pathname + url.search + url.hash;
+                            }
+                        } catch(e) {}
+                    }
+                    // Check child anchor tags
+                    var anchors = node.querySelectorAll ? node.querySelectorAll('a[href]') : [];
+                    anchors.forEach(function(a) {
+                        try {
+                            var url = new URL(a.href, window.location.origin);
+                            if (url.origin === window.location.origin && shouldProxyPath(url.pathname)) {
+                                a.href = PROXY_PATH + url.pathname + url.search + url.hash;
+                            }
+                        } catch(e) {}
+                    });
+                }
+            });
+        });
+    });
+    
+    observer.observe(document.documentElement, {
+        childList: true,
+        subtree: true
+    });
 </script>
 `;
 
-/**
- * Check if a content type needs rewriting
- */
 function needsRewriting(contentType: string | null): boolean {
     if (!contentType) return false;
     return REWRITABLE_TYPES.some(type => contentType.includes(type));
 }
 
-/**
- * Rewrite URLs in content - replaces vidfast.pro references with proxy path
- */
 function rewriteContent(content: string, contentType: string | null, proxyBase: string): string {
     let rewritten = content;
 
     // Rewrite absolute URLs to the target
-    rewritten = rewritten.replace(
-        new RegExp(`https?://${TARGET_HOST}`, 'gi'),
-        proxyBase
-    );
+    rewritten = rewritten.replace(REGEX_TARGET_PROTOCOL, proxyBase);
 
     // Rewrite protocol-relative URLs
-    rewritten = rewritten.replace(
-        new RegExp(`//${TARGET_HOST}`, 'gi'),
-        proxyBase.replace(/^https?:/, '')
-    );
+    rewritten = rewritten.replace(REGEX_TARGET_NO_PROTOCOL, proxyBase.replace(/^https?:/, ''));
 
-    // For HTML content, rewrite root-relative paths in specific attributes
+    // For HTML content
     if (contentType?.includes('text/html')) {
-        // Rewrite src, href, action attributes that start with /
-        // Matches: src="/path", href='/path', action="/path", etc.
-        // Negative lookahead (?!(?:video\/|_next\/image)) prevents double prefixing or breaking specific paths
-        rewritten = rewritten.replace(
-            /((?:src|href|action|srcset|poster|data-src|data-href)\s*=\s*["'])\/(?!video\/)([^"']*["'])/gi,
-            `$1${PROXY_PATH}/$2`
-        );
+        rewritten = rewritten.replace(REGEX_HTML_ATTRS, `$1${PROXY_PATH}/$2`);
+        rewritten = rewritten.replace(REGEX_NEXT_DOUBLE, `"${PROXY_PATH}$1"`);
+        rewritten = rewritten.replace(REGEX_NEXT_SINGLE, `'${PROXY_PATH}$1'`);
+        rewritten = rewritten.replace(REGEX_PRELOAD, `$1${PROXY_PATH}/$2`);
+        rewritten = rewritten.replace(REGEX_PRELOAD_REVERSED, `$1${PROXY_PATH}/$2`);
 
-        // Rewrite Next.js specific patterns and other root paths in double quotes
+        // Rewrite __NEXT_DATA__ and other inline scripts
         rewritten = rewritten.replace(
-            /"(\/(?:_next|api|cdn-cgi|hezushon)\/[^"]*)"/g,
-            `"${PROXY_PATH}$1"`
-        );
+            REGEX_SCRIPT_TAG,
+            (match, openTag, scriptContent, closeTag) => {
+                let rewrittenContent = scriptContent;
 
-        // Rewrite Next.js specific patterns in single quotes
-        rewritten = rewritten.replace(
-            /'(\/(?:_next|api|cdn-cgi|hezushon)\/[^']*)'/g,
-            `'${PROXY_PATH}$1'`
-        );
+                // Rewrite paths in JSON-like structures
+                rewrittenContent = rewrittenContent.replace(REGEX_JSON_INTERNAL_PATHS, `"${PROXY_PATH}$1"`);
+                rewrittenContent = rewrittenContent.replace(REGEX_NEXT_DOUBLE, `"${PROXY_PATH}$1"`);
+                rewrittenContent = rewrittenContent.replace(REGEX_NEXT_SINGLE, `'${PROXY_PATH}$1'`);
 
-        // Rewrite preload/prefetch links that might have been missed
-        rewritten = rewritten.replace(
-            /(rel=["'](?:preload|prefetch|modulepreload)["'][^>]*href=["'])\/(?!video\/)([^"']+["'])/gi,
-            `$1${PROXY_PATH}/$2`
-        );
-
-        // Also catch reversed order (href before rel)
-        rewritten = rewritten.replace(
-            /(href=["'])\/(?!video\/)([^"']+["'][^>]*rel=["'](?:preload|prefetch|modulepreload)["'])/gi,
-            `$1${PROXY_PATH}/$2`
-        );
-
-        // Rewrite inline script content that has root paths
-        rewritten = rewritten.replace(
-            /(<script[^>]*>)([\s\S]*?)(<\/script>)/gi,
-            (match, openTag, content, closeTag) => {
-                let rewrittenContent = content;
-                // Rewrite paths in the script content
-                rewrittenContent = rewrittenContent.replace(
-                    /"(\/(?:_next|api|cdn-cgi|hezushon)\/[^"]*)"/g,
-                    `"${PROXY_PATH}$1"`
-                );
-                rewrittenContent = rewrittenContent.replace(
-                    /'(\/(?:_next|api|cdn-cgi|hezushon)\/[^']*)'/g,
-                    `'${PROXY_PATH}$1'`
-                );
                 return openTag + rewrittenContent + closeTag;
             }
         );
 
-        // Inject interceptor script in head
-        rewritten = rewritten.replace('</head>', INTERCEPTOR_SCRIPT + '</head>');
+        // Inject interceptor as early as possible (after <head> opens, before other scripts)
+        if (rewritten.includes('<head>')) {
+            rewritten = rewritten.replace('<head>', '<head>' + INTERCEPTOR_SCRIPT);
+        } else if (rewritten.includes('<head ')) {
+            rewritten = rewritten.replace(/<head[^>]*>/, '$&' + INTERCEPTOR_SCRIPT);
+        } else {
+            rewritten = rewritten.replace('</head>', INTERCEPTOR_SCRIPT + '</head>');
+        }
     }
 
     // For JavaScript content
     if (contentType?.includes('javascript')) {
-        // Rewrite string literals with absolute paths
-        // Be careful not to break the JS - only rewrite known patterns
-
-        // Next.js chunk loading paths, API routes, and other specific root paths
-        const targets = ['_next', 'api', 'cdn-cgi', 'hezushon'];
+        const targets = ['_next', 'api', 'cdn-cgi', 'hezushon', 'tv', 'movie', 'watch'];
         const pattern = targets.join('|');
 
-        // Replace "/_next/..." with "/video/_next/..."
-        rewritten = rewritten.replace(
-            new RegExp(`"\\/(${pattern})\\/`, 'g'),
-            `"${PROXY_PATH}/$1/`
-        );
-
-        // Single-quoted variants
-        rewritten = rewritten.replace(
-            new RegExp(`'\\/(${pattern})\\/`, 'g'),
-            `'${PROXY_PATH}/$1/`
-        );
-
-        // Template literal variants (backticks)
-        rewritten = rewritten.replace(
-            new RegExp(`\`\\/(${pattern})\\/`, 'g'),
-            `\`${PROXY_PATH}/$1/`
-        );
+        // Match paths with various endings (not just trailing slash)
+        rewritten = rewritten.replace(new RegExp(`"(\\/(${pattern})(?:\\/[^"]*|[^"]*))(?=")`, 'g'), `"${PROXY_PATH}$1`);
+        rewritten = rewritten.replace(new RegExp(`'(\\/(${pattern})(?:\\/[^']*|[^']*))(?=')`, 'g'), `'${PROXY_PATH}$1`);
+        rewritten = rewritten.replace(new RegExp(`\`(\\/(${pattern})(?:\\/[^\`]*|[^\`]*))\``, 'g'), `\`${PROXY_PATH}$1\``);
     }
 
     // For CSS content
     if (contentType?.includes('text/css')) {
-        // Rewrite url() references
-        rewritten = rewritten.replace(
-            /url\(\s*["']?\/([^"')]+)["']?\s*\)/gi,
-            `url("${PROXY_PATH}/$1")`
-        );
+        rewritten = rewritten.replace(REGEX_CSS_URL, `url("${PROXY_PATH}/$1")`);
     }
 
-    // For JSON content (Next.js data fetching)
+    // For JSON content
     if (contentType?.includes('application/json')) {
-        // Rewrite any absolute URLs in JSON
-        rewritten = rewritten.replace(
-            new RegExp(`"https?://${TARGET_HOST}`, 'gi'),
-            `"${proxyBase}`
-        );
+        rewritten = rewritten.replace(REGEX_JSON_URL, `"${proxyBase}`);
+        // Also rewrite internal paths in JSON
+        rewritten = rewritten.replace(REGEX_JSON_INTERNAL_PATHS, `"${PROXY_PATH}$1"`);
     }
 
     return rewritten;
 }
 
-/**
- * Rewrite Set-Cookie headers to work on our domain
- */
 function rewriteCookieHeader(cookie: string): string {
-    // Remove or rewrite domain attribute
     let rewritten = cookie.replace(/;\s*domain=[^;]*/gi, '');
-
-    // Rewrite path if it's root
     rewritten = rewritten.replace(/;\s*path=\//gi, `; Path=${PROXY_PATH}/`);
-
-    // Remove SameSite=None if we're not using HTTPS in dev
-    // (this is handled by the browser anyway)
-
     return rewritten;
 }
 
-/**
- * Create headers for the proxied request
- */
-function createProxyHeaders(originalRequest: Request, targetUrl: URL): Headers {
-    const headers = new Headers();
+function compressContent(content: string | Buffer, acceptEncoding: string): { buffer: Buffer, encoding: 'br' | 'gzip' | 'deflate' | 'identity' } {
+    const input = Buffer.isBuffer(content) ? content : Buffer.from(content);
 
-    // Copy most headers from original request
-    for (const [key, value] of originalRequest.headers.entries()) {
-        const lowerKey = key.toLowerCase();
-
-        // Skip hop-by-hop headers and host
-        if (['host', 'connection', 'keep-alive', 'transfer-encoding',
-            'te', 'trailer', 'upgrade'].includes(lowerKey)) {
-            continue;
-        }
-
-        headers.set(key, value);
-    }
-
-    // Set the correct Host header
-    headers.set('Host', TARGET_HOST);
-
-    // Rewrite Referer if present
-    const referer = originalRequest.headers.get('referer');
-    if (referer) {
+    if (acceptEncoding.includes('br')) {
         try {
-            const refererUrl = new URL(referer);
-            // If the referer is our proxy, rewrite it to be the target
-            if (refererUrl.pathname.startsWith(PROXY_PATH)) {
-                refererUrl.host = TARGET_HOST;
-                refererUrl.pathname = refererUrl.pathname.replace(PROXY_PATH, '');
-                headers.set('Referer', refererUrl.toString());
-            } else {
-                // Otherwise set referer to target root to avoid cross-origin issues
-                headers.set('Referer', TARGET_ORIGIN + '/');
-            }
-        } catch {
-            // Invalid referer, skip rewriting
-        }
-    } else {
-        // Set a default referer if none exists, as many sites require it
-        headers.set('Referer', TARGET_ORIGIN + '/');
+            return { buffer: brotliCompressSync(input), encoding: 'br' };
+        } catch (e) { /* fall through */ }
     }
 
-    // Rewrite Origin for CORS
-    const origin = originalRequest.headers.get('origin');
-    if (origin) {
-        headers.set('Origin', TARGET_ORIGIN);
+    if (acceptEncoding.includes('gzip')) {
+        return { buffer: gzipSync(input), encoding: 'gzip' };
     }
 
-    // Add accept-encoding for compressed responses
-    headers.set('Accept-Encoding', 'gzip, deflate, br');
+    if (acceptEncoding.includes('deflate')) {
+        return { buffer: deflateSync(input), encoding: 'deflate' };
+    }
 
-    return headers;
+    return { buffer: input, encoding: 'identity' };
 }
 
-/**
- * Main proxy handler - for use with Astro/Vite middleware
- */
 export async function handleProxyRequest(
     request: Request,
     proxyBase: string
 ): Promise<Response> {
     const url = new URL(request.url);
-
-    // Strip the proxy path prefix to get the target path
     const targetPath = url.pathname.replace(new RegExp(`^${PROXY_PATH}`), '') || '/';
     const targetUrl = new URL(targetPath + url.search, TARGET_ORIGIN);
 
-    // Create proxied request
-    const proxyHeaders = createProxyHeaders(request, targetUrl);
+    const cacheKey = request.method === 'GET' ? targetUrl.toString() : null;
+
+    if (cacheKey) {
+        const cached = getFromCache(cacheKey);
+        if (cached) {
+            const acceptEncoding = request.headers.get('accept-encoding') || '';
+            if (acceptEncoding.includes(cached.encoding) || cached.encoding === 'identity') {
+                return new Response(cached.content as any, {
+                    status: 200,
+                    headers: {
+                        'Content-Type': cached.contentType,
+                        'Content-Encoding': cached.encoding,
+                        'Cache-Control': 'public, max-age=60',
+                        'X-Proxy-Cache': 'HIT',
+                        'Access-Control-Allow-Origin': '*'
+                    }
+                });
+            }
+        }
+    }
+
+    const proxyHeaders = new Headers();
+    for (const [key, value] of request.headers.entries()) {
+        const lowerKey = key.toLowerCase();
+        if (['host', 'connection', 'keep-alive', 'transfer-encoding', 'te', 'trailer', 'upgrade'].includes(lowerKey)) continue;
+        proxyHeaders.set(key, value);
+    }
+    proxyHeaders.set('Host', TARGET_HOST);
+    proxyHeaders.set('Accept-Encoding', 'gzip, deflate, br');
+
+    const referer = request.headers.get('referer');
+    if (referer) {
+        try {
+            const refererUrl = new URL(referer);
+            if (refererUrl.pathname.startsWith(PROXY_PATH)) {
+                refererUrl.host = TARGET_HOST;
+                refererUrl.pathname = refererUrl.pathname.replace(PROXY_PATH, '');
+                proxyHeaders.set('Referer', refererUrl.toString());
+            } else {
+                proxyHeaders.set('Referer', TARGET_ORIGIN + '/');
+            }
+        } catch { }
+    } else {
+        proxyHeaders.set('Referer', TARGET_ORIGIN + '/');
+    }
+
+    const origin = request.headers.get('origin');
+    if (origin) proxyHeaders.set('Origin', TARGET_ORIGIN);
 
     try {
         const proxyResponse = await fetch(targetUrl.toString(), {
             method: request.method,
             headers: proxyHeaders,
-            body: request.method !== 'GET' && request.method !== 'HEAD'
-                ? await request.text()
-                : undefined,
-            redirect: 'manual', // Handle redirects ourselves
+            body: request.method !== 'GET' && request.method !== 'HEAD' ? await request.text() : undefined,
+            redirect: 'manual',
         });
 
-        // Create response headers
         const responseHeaders = new Headers();
-
         for (const [key, value] of proxyResponse.headers.entries()) {
             const lowerKey = key.toLowerCase();
+            if (['connection', 'keep-alive', 'transfer-encoding', 'te', 'trailer', 'upgrade', 'content-length', 'content-encoding'].includes(lowerKey)) continue;
 
-            // Skip hop-by-hop headers
-            if (['connection', 'keep-alive', 'transfer-encoding',
-                'te', 'trailer', 'upgrade'].includes(lowerKey)) {
-                continue;
-            }
-
-            // Rewrite Location header for redirects
             if (lowerKey === 'location') {
                 let location = value;
                 if (location.startsWith('/')) {
@@ -319,55 +448,46 @@ export async function handleProxyRequest(
                 responseHeaders.set(key, location);
                 continue;
             }
-
-            // Rewrite Set-Cookie headers
             if (lowerKey === 'set-cookie') {
                 responseHeaders.append(key, rewriteCookieHeader(value));
                 continue;
             }
-
-            // Remove Content-Security-Policy as it may block our proxy
-            if (lowerKey === 'content-security-policy' ||
-                lowerKey === 'content-security-policy-report-only') {
-                continue;
-            }
-
-            // Remove X-Frame-Options to allow iframe embedding
-            if (lowerKey === 'x-frame-options') {
-                continue;
-            }
+            if (['content-security-policy', 'content-security-policy-report-only', 'x-frame-options'].includes(lowerKey)) continue;
 
             responseHeaders.set(key, value);
         }
 
-        // Add CORS headers to allow embedding
         responseHeaders.set('Access-Control-Allow-Origin', '*');
         responseHeaders.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
         responseHeaders.set('Access-Control-Allow-Headers', '*');
 
-        // Check if we need to rewrite the response body
         const contentType = proxyResponse.headers.get('content-type');
 
         if (needsRewriting(contentType)) {
-            // Get text content and rewrite
             const text = await proxyResponse.text();
             const rewrittenContent = rewriteContent(text, contentType, proxyBase);
+            const acceptEncoding = request.headers.get('accept-encoding') || '';
+            const { buffer, encoding } = compressContent(rewrittenContent, acceptEncoding);
 
-            // Remove content-length and content-encoding as the body is modified
-            responseHeaders.delete('content-length');
-            responseHeaders.delete('content-encoding');
-            responseHeaders.delete('transfer-encoding');
+            responseHeaders.set('Content-Encoding', encoding);
+            responseHeaders.set('X-Proxy-Cache', 'MISS');
 
-            return new Response(rewrittenContent, {
+            if (cacheKey && proxyResponse.status === 200) {
+                addToCache(cacheKey, {
+                    content: buffer,
+                    contentType: contentType || 'text/plain',
+                    encoding,
+                    timestamp: Date.now(),
+                    etag: `W/"${Date.now()}"`
+                });
+            }
+
+            return new Response(buffer as any, {
                 status: proxyResponse.status,
                 statusText: proxyResponse.statusText,
                 headers: responseHeaders,
             });
         }
-
-        // For binary content, pass through as-is
-        // We must remove content-encoding because fetch() likely decompressed it
-        responseHeaders.delete('content-encoding');
 
         return new Response(proxyResponse.body, {
             status: proxyResponse.status,
@@ -384,38 +504,23 @@ export async function handleProxyRequest(
     }
 }
 
-/**
- * Handle external proxy requests (Universal Proxy)
- * /video/ext/<protocol>/<host>/<path>
- */
 export async function handleExtProxyRequest(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const parts = url.pathname.split('/');
-    // Expected: ['', 'video', 'ext', 'protocol', 'host', ...path]
+    if (parts.length < 5) return new Response("Invalid proxy URL format", { status: 400 });
 
-    if (parts.length < 5) {
-        return new Response("Invalid proxy URL format", { status: 400 });
-    }
-
-    const protocol = parts[3]; // http or https
+    const protocol = parts[3];
     const host = parts[4];
     const path = parts.slice(5).join('/');
-
     const targetUrl = `${protocol}://${host}/${path}${url.search}`;
 
     try {
         const headers = new Headers();
-        // Forward some headers but spoof Origin/Referer
         const forbidden = ['host', 'origin', 'referer', 'connection', 'keep-alive', 'transfer-encoding'];
 
         for (const [key, value] of request.headers.entries()) {
-            if (!forbidden.includes(key.toLowerCase())) {
-                headers.set(key, value);
-            }
+            if (!forbidden.includes(key.toLowerCase())) headers.set(key, value);
         }
-
-        // Spoof headers to make it look like it comes from vidfast or the target itself
-        // Most streams permit if Referer is vidfast.pro
         headers.set('Origin', TARGET_ORIGIN);
         headers.set('Referer', TARGET_ORIGIN + '/');
 
@@ -427,13 +532,9 @@ export async function handleExtProxyRequest(request: Request): Promise<Response>
         });
 
         const responseHeaders = new Headers(response.headers);
-
-        // Allow CORS for everything
         responseHeaders.set('Access-Control-Allow-Origin', '*');
         responseHeaders.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, HEAD');
         responseHeaders.set('Access-Control-Allow-Headers', '*');
-
-        // Remove framing protection
         responseHeaders.delete('x-frame-options');
         responseHeaders.delete('content-security-policy');
 
@@ -444,14 +545,10 @@ export async function handleExtProxyRequest(request: Request): Promise<Response>
         });
 
     } catch (e) {
-        console.error('[vidfast-ext-proxy] Error:', e);
         return new Response(`External proxy error: ${e}`, { status: 502 });
     }
 }
 
-/**
- * Check if a request path should be proxied
- */
 export function shouldProxy(pathname: string): boolean {
     return pathname.startsWith(PROXY_PATH) ||
         pathname.startsWith('/_next/') ||
