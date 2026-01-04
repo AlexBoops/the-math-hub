@@ -3,35 +3,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const adContainer = document.getElementById('ad-container');
     if (!adContainer) return;
 
-    // Add ad content structure
-    adContainer.innerHTML = `
-        <div class="ad-close" title="Close">×</div>
-        <div class="ad-content"></div>
-    `;
-
-    const adContent = adContainer.querySelector('.ad-content');
-    if (adContent) {
-        // Create atOptions script
-        const script1 = document.createElement('script');
-        script1.type = 'text/javascript';
-        script1.text = `
-            atOptions = {
-                'key' : '0b4f29943f8825bf9a2e81a67765af8b',
-                'format' : 'iframe',
-                'height' : 90,
-                'width' : 728,
-                'params' : {}
-            };
-        `;
-        adContent.appendChild(script1);
-
-        // Create invoke.js script
-        const script2 = document.createElement('script');
-        script2.type = 'text/javascript';
-        script2.src = 'https://thieflamppost.com/0b4f29943f8825bf9a2e81a67765af8b/invoke.js';
-        adContent.appendChild(script2);
-    }
-
     const closeBtn = adContainer.querySelector('.ad-close');
 
     let isCollapsed = false;
@@ -48,12 +19,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const expandAd = () => {
         if (!isCollapsed || isExpanding) return;
 
-        // Cooldown to prevent instant pop-back if the user's mouse is already there
         if (Date.now() - lastUncollapsedTime < 600) return;
 
         isExpanding = true;
 
-        // Use the popping animation
         adContainer.classList.add('popping');
         adContainer.classList.remove('collapsed');
 
@@ -61,7 +30,6 @@ document.addEventListener('DOMContentLoaded', () => {
             isCollapsed = false;
             isExpanding = false;
             lastUncollapsedTime = Date.now();
-            // We keep the popping class for a bit to finish animation then remove it
             setTimeout(() => {
                 adContainer.classList.remove('popping');
             }, 400);
@@ -76,7 +44,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // Annoying behavior: Pop back out if cursor is near
     document.addEventListener('mousemove', (e) => {
         if (!isCollapsed || isExpanding) return;
 
@@ -84,10 +51,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const mouseX = e.clientX;
         const mouseY = e.clientY;
 
-        // Check distance to the collapsed container
-        const distanceThreshold = 200; // Even more aggressive threshold
+        const distanceThreshold = 200;
 
-        // If mouse is within the vertical bounds of the ad and within the threshold of the left edge
         if (mouseY >= rect.top - distanceThreshold &&
             mouseY <= rect.bottom + distanceThreshold &&
             mouseX >= rect.left - distanceThreshold) {
@@ -95,7 +60,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // Also expand if specifically hovered
     adContainer.addEventListener('mouseenter', () => {
         if (isCollapsed) expandAd();
     });
