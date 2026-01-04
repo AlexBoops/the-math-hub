@@ -1,6 +1,7 @@
 @import url('index.css');
 @import url('games.css');
 @import url('animations.css');
+@import url('ads.css');
 @import "tailwindcss";
 
 @font-face {
