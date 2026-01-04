@@ -3,11 +3,6 @@
  * 
  * Proxies vidfast.pro through /video/* with full content rewriting
  * so the browser never sees the original domain.
- * 
- * OPTIMIZATIONS:
- * - In-memory caching for rewritten content (LRU-like)
- * - Response compression (Gzip/Brotli)
- * - Pre-compiled Regex patterns
  */
 
 import { gzipSync, deflateSync, brotliCompressSync } from 'node:zlib';
@@ -32,8 +27,6 @@ const REGEX_PRELOAD_REVERSED = /(href=["'])\/(?!video\/)([^"']+["'][^>]*rel=["']
 const REGEX_SCRIPT_TAG = /(<script[^>]*>)([\s\S]*?)(<\/script>)/gi;
 const REGEX_CSS_URL = /url\(\s*["']?\/([^"')]+)["']?\s*\)/gi;
 const REGEX_JSON_URL = new RegExp(`"https?://${TARGET_HOST}`, 'gi');
-
-// NEW: Pattern to match internal paths in JSON/JS that need rewriting
 const REGEX_JSON_INTERNAL_PATHS = /"(\/(?:tv|movie|watch)\/[^"]*)"/g;
 
 const REWRITABLE_TYPES = [
@@ -85,7 +78,7 @@ const INTERCEPTOR_SCRIPT = `
     
     function shouldProxyPath(path) {
         if (!path) return false;
-        if (path.startsWith('/video/')) return false; // Already proxied
+        if (path.startsWith('/video/')) return false; 
         return PROXY_PATHS.some(function(p) { return path.startsWith(p); });
     }
     
@@ -93,12 +86,10 @@ const INTERCEPTOR_SCRIPT = `
         if (!url) return url;
         if (typeof url !== 'string') url = String(url);
         
-        // Already proxied - don't touch
         if (url.startsWith('/video/') || url.indexOf('/video/') !== -1) {
             return url;
         }
         
-        // Root-relative paths (e.g., /tv/123, /movie/456)
         if (url.charAt(0) === '/' && url.charAt(1) !== '/') {
             if (shouldProxyPath(url)) {
                 return PROXY_PATH + url;
@@ -106,33 +97,27 @@ const INTERCEPTOR_SCRIPT = `
             return url;
         }
         
-        // Protocol-relative URLs (//example.com/...)
         if (url.startsWith('//')) {
             return PROXY_EXT + 'https/' + url.substring(2);
         }
         
-        // Absolute URLs
         if (url.startsWith('http://') || url.startsWith('https://')) {
             try {
                 var parsed = new URL(url);
-                // Same origin - check if path needs proxying
                 if (parsed.origin === window.location.origin) {
                     if (shouldProxyPath(parsed.pathname)) {
                         return PROXY_PATH + parsed.pathname + parsed.search + parsed.hash;
                     }
                     return url;
                 }
-                // External URL - proxy it
                 return PROXY_EXT + url.replace('://', '/');
             } catch(e) {
                 return url;
             }
         }
-        
         return url;
     }
 
-    // --- FETCH INTERCEPT ---
     var originalFetch = window.fetch;
     window.fetch = function(input, init) {
         var newInput = input;
@@ -147,7 +132,6 @@ const INTERCEPTOR_SCRIPT = `
         return originalFetch.call(window, newInput, init);
     };
 
-    // --- XHR INTERCEPT ---
     var originalXhrOpen = XMLHttpRequest.prototype.open;
     XMLHttpRequest.prototype.open = function(method, url) {
         var args = Array.prototype.slice.call(arguments);
@@ -155,7 +139,6 @@ const INTERCEPTOR_SCRIPT = `
         return originalXhrOpen.apply(this, args);
     };
 
-    // --- HISTORY API INTERCEPT ---
     var originalPushState = history.pushState;
     var originalReplaceState = history.replaceState;
 
@@ -169,38 +152,26 @@ const INTERCEPTOR_SCRIPT = `
         return originalReplaceState.call(history, state, unused, newUrl);
     };
     
-    // --- LOCATION INTERCEPT ---
     try {
         var originalAssign = location.assign.bind(location);
         var originalReplace = location.replace.bind(location);
-        
-        location.assign = function(url) {
-            return originalAssign(rewriteUrl(url));
-        };
-        
-        location.replace = function(url) {
-            return originalReplace(rewriteUrl(url));
-        };
+        location.assign = function(url) { return originalAssign(rewriteUrl(url)); };
+        location.replace = function(url) { return originalReplace(rewriteUrl(url)); };
     } catch(e) {}
     
-    // --- WINDOW.OPEN INTERCEPT ---
     var originalWindowOpen = window.open;
     window.open = function(url, target, features) {
         return originalWindowOpen.call(window, rewriteUrl(url), target, features);
     };
     
-    // --- CLICK HANDLER (Capture Phase) ---
     document.addEventListener('click', function(e) {
         var target = e.target;
-        // Walk up to find anchor tag
         while (target && target.tagName !== 'A') {
             target = target.parentElement;
         }
-
         if (target && target.href) {
             try {
                 var url = new URL(target.href, window.location.origin);
-                // Only intercept same-origin navigations
                 if (url.origin === window.location.origin && shouldProxyPath(url.pathname)) {
                     e.preventDefault();
                     e.stopPropagation();
@@ -212,7 +183,6 @@ const INTERCEPTOR_SCRIPT = `
         }
     }, true);
     
-    // --- FORM SUBMIT INTERCEPT ---
     document.addEventListener('submit', function(e) {
         var form = e.target;
         if (form && form.action) {
@@ -225,20 +195,16 @@ const INTERCEPTOR_SCRIPT = `
         }
     }, true);
     
-    // --- POPSTATE HANDLER (Back/Forward buttons) ---
     window.addEventListener('popstate', function(e) {
-        // If somehow we ended up at a non-proxied path, redirect
         if (shouldProxyPath(window.location.pathname)) {
             window.location.href = PROXY_PATH + window.location.pathname + window.location.search + window.location.hash;
         }
     });
     
-    // --- MUTATION OBSERVER (Catch dynamically added links) ---
     var observer = new MutationObserver(function(mutations) {
         mutations.forEach(function(mutation) {
             mutation.addedNodes.forEach(function(node) {
-                if (node.nodeType === 1) { // Element node
-                    // Check the node itself
+                if (node.nodeType === 1) { 
                     if (node.tagName === 'A' && node.href) {
                         try {
                             var url = new URL(node.href, window.location.origin);
@@ -247,7 +213,6 @@ const INTERCEPTOR_SCRIPT = `
                             }
                         } catch(e) {}
                     }
-                    // Check child anchor tags
                     var anchors = node.querySelectorAll ? node.querySelectorAll('a[href]') : [];
                     anchors.forEach(function(a) {
                         try {
@@ -276,14 +241,9 @@ function needsRewriting(contentType: string | null): boolean {
 
 function rewriteContent(content: string, contentType: string | null, proxyBase: string): string {
     let rewritten = content;
-
-    // Rewrite absolute URLs to the target
     rewritten = rewritten.replace(REGEX_TARGET_PROTOCOL, proxyBase);
-
-    // Rewrite protocol-relative URLs
     rewritten = rewritten.replace(REGEX_TARGET_NO_PROTOCOL, proxyBase.replace(/^https?:/, ''));
 
-    // For HTML content
     if (contentType?.includes('text/html')) {
         rewritten = rewritten.replace(REGEX_HTML_ATTRS, `$1${PROXY_PATH}/$2`);
         rewritten = rewritten.replace(REGEX_NEXT_DOUBLE, `"${PROXY_PATH}$1"`);
@@ -291,22 +251,17 @@ function rewriteContent(content: string, contentType: string | null, proxyBase: 
         rewritten = rewritten.replace(REGEX_PRELOAD, `$1${PROXY_PATH}/$2`);
         rewritten = rewritten.replace(REGEX_PRELOAD_REVERSED, `$1${PROXY_PATH}/$2`);
 
-        // Rewrite __NEXT_DATA__ and other inline scripts
         rewritten = rewritten.replace(
             REGEX_SCRIPT_TAG,
             (match, openTag, scriptContent, closeTag) => {
                 let rewrittenContent = scriptContent;
-
-                // Rewrite paths in JSON-like structures
                 rewrittenContent = rewrittenContent.replace(REGEX_JSON_INTERNAL_PATHS, `"${PROXY_PATH}$1"`);
                 rewrittenContent = rewrittenContent.replace(REGEX_NEXT_DOUBLE, `"${PROXY_PATH}$1"`);
                 rewrittenContent = rewrittenContent.replace(REGEX_NEXT_SINGLE, `'${PROXY_PATH}$1'`);
-
                 return openTag + rewrittenContent + closeTag;
             }
         );
 
-        // Inject interceptor as early as possible (after <head> opens, before other scripts)
         if (rewritten.includes('<head>')) {
             rewritten = rewritten.replace('<head>', '<head>' + INTERCEPTOR_SCRIPT);
         } else if (rewritten.includes('<head ')) {
@@ -316,26 +271,20 @@ function rewriteContent(content: string, contentType: string | null, proxyBase: 
         }
     }
 
-    // For JavaScript content
     if (contentType?.includes('javascript')) {
         const targets = ['_next', 'api', 'cdn-cgi', 'hezushon', 'tv', 'movie', 'watch'];
         const pattern = targets.join('|');
-
-        // Match paths with various endings (not just trailing slash)
         rewritten = rewritten.replace(new RegExp(`"(\\/(${pattern})(?:\\/[^"]*|[^"]*))(?=")`, 'g'), `"${PROXY_PATH}$1`);
         rewritten = rewritten.replace(new RegExp(`'(\\/(${pattern})(?:\\/[^']*|[^']*))(?=')`, 'g'), `'${PROXY_PATH}$1`);
         rewritten = rewritten.replace(new RegExp(`\`(\\/(${pattern})(?:\\/[^\`]*|[^\`]*))\``, 'g'), `\`${PROXY_PATH}$1\``);
     }
 
-    // For CSS content
     if (contentType?.includes('text/css')) {
         rewritten = rewritten.replace(REGEX_CSS_URL, `url("${PROXY_PATH}/$1")`);
     }
 
-    // For JSON content
     if (contentType?.includes('application/json')) {
         rewritten = rewritten.replace(REGEX_JSON_URL, `"${proxyBase}`);
-        // Also rewrite internal paths in JSON
         rewritten = rewritten.replace(REGEX_JSON_INTERNAL_PATHS, `"${PROXY_PATH}$1"`);
     }
 
@@ -356,15 +305,12 @@ function compressContent(content: string | Buffer, acceptEncoding: string): { bu
             return { buffer: brotliCompressSync(input), encoding: 'br' };
         } catch (e) { /* fall through */ }
     }
-
     if (acceptEncoding.includes('gzip')) {
         return { buffer: gzipSync(input), encoding: 'gzip' };
     }
-
     if (acceptEncoding.includes('deflate')) {
         return { buffer: deflateSync(input), encoding: 'deflate' };
     }
-
     return { buffer: input, encoding: 'identity' };
 }
 
@@ -404,7 +350,20 @@ export async function handleProxyRequest(
         proxyHeaders.set(key, value);
     }
     proxyHeaders.set('Host', TARGET_HOST);
-    proxyHeaders.set('Accept-Encoding', 'gzip, deflate, br');
+
+    // Filter Accept-Encoding to only what Node fetch supports (gzip, deflate, br)
+    // This prevents upstream from sending zstd which we can't decompress/rewrite
+    const acceptEncoding = request.headers.get('accept-encoding');
+    if (acceptEncoding) {
+        const supported = ['gzip', 'deflate', 'br'];
+        const method = acceptEncoding.split(',')
+            .map(e => e.trim().toLowerCase())
+            .filter(e => supported.some(s => e.startsWith(s)))
+            .join(', ');
+        if (method) {
+            proxyHeaders.set('Accept-Encoding', method);
+        }
+    }
 
     const referer = request.headers.get('referer');
     if (referer) {
@@ -436,7 +395,7 @@ export async function handleProxyRequest(
         const responseHeaders = new Headers();
         for (const [key, value] of proxyResponse.headers.entries()) {
             const lowerKey = key.toLowerCase();
-            if (['connection', 'keep-alive', 'transfer-encoding', 'te', 'trailer', 'upgrade', 'content-length', 'content-encoding'].includes(lowerKey)) continue;
+            if (['connection', 'keep-alive', 'transfer-encoding', 'te', 'trailer', 'upgrade'].includes(lowerKey)) continue;
 
             if (lowerKey === 'location') {
                 let location = value;
@@ -454,12 +413,28 @@ export async function handleProxyRequest(
             }
             if (['content-security-policy', 'content-security-policy-report-only', 'x-frame-options'].includes(lowerKey)) continue;
 
+            // Only skip content-length/encoding if we might rewrite the body
+            const contentType = proxyResponse.headers.get('content-type');
+            if (needsRewriting(contentType)) {
+                if (['content-length', 'content-encoding'].includes(lowerKey)) continue;
+            }
+
             responseHeaders.set(key, value);
         }
 
         responseHeaders.set('Access-Control-Allow-Origin', '*');
         responseHeaders.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
         responseHeaders.set('Access-Control-Allow-Headers', '*');
+
+        // --- FIX 1: HANDLE 204/304 RESPONSES ---
+        // These statuses MUST NOT have a body. Node's undici throws if you pass one.
+        if (proxyResponse.status === 204 || proxyResponse.status === 304) {
+            return new Response(null, {
+                status: proxyResponse.status,
+                statusText: proxyResponse.statusText,
+                headers: responseHeaders,
+            });
+        }
 
         const contentType = proxyResponse.headers.get('content-type');
 
@@ -537,6 +512,15 @@ export async function handleExtProxyRequest(request: Request): Promise<Response>
         responseHeaders.set('Access-Control-Allow-Headers', '*');
         responseHeaders.delete('x-frame-options');
         responseHeaders.delete('content-security-policy');
+
+        // --- FIX 2: HANDLE 204/304 RESPONSES FOR EXT PROXY ---
+        if (response.status === 204 || response.status === 304) {
+            return new Response(null, {
+                status: response.status,
+                statusText: response.statusText,
+                headers: responseHeaders
+            });
+        }
 
         return new Response(response.body, {
             status: response.status,
