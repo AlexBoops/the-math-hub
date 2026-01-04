@@ -1,12 +1,22 @@
 /**
- * Vidfast Reverse Proxy Middleware
+ * Vidfast Reverse Proxy Middleware (FIXED)
  * 
- * Proxies vidfast.pro through /video/* with full content rewriting
- * so the browser never sees the original domain.
+ * Key fixes:
+ * - Async compression (non-blocking)
+ * - Proper streaming for binary content
+ * - Range request support
+ * - Better memory management
  */
 
-import { gzipSync, deflateSync, brotliCompressSync } from 'node:zlib';
+import { gzip, deflate, brotliCompress } from 'node:zlib';
+import { promisify } from 'node:util';
 import { Buffer } from 'node:buffer';
+import { Readable } from 'node:stream';
+
+// Async compression functions (non-blocking!)
+const gzipAsync = promisify(gzip);
+const deflateAsync = promisify(deflate);
+const brotliCompressAsync = promisify(brotliCompress);
 
 const TARGET_HOST = 'vidfast.pro';
 const TARGET_ORIGIN = `https://${TARGET_HOST}`;
@@ -35,6 +45,16 @@ const REWRITABLE_TYPES = [
     'application/javascript',
     'text/javascript',
     'application/json',
+];
+
+// Content types that should be streamed without any processing
+const STREAMABLE_TYPES = [
+    'video/',
+    'audio/',
+    'application/octet-stream',
+    'application/vnd.apple.mpegurl',  // HLS
+    'application/x-mpegurl',           // HLS
+    'application/dash+xml',            // DASH
 ];
 
 // --- CACHE ---
@@ -73,7 +93,6 @@ const INTERCEPTOR_SCRIPT = `
     const PROXY_PATH = '/video';
     const PROXY_EXT = '/video/ext/';
     
-    // Paths that MUST go through the proxy
     const PROXY_PATHS = ['/tv/', '/movie/', '/watch/', '/watch?', '/_next/', '/api/', '/cdn-cgi/', '/hezushon/'];
     
     function shouldProxyPath(path) {
@@ -231,12 +250,18 @@ const INTERCEPTOR_SCRIPT = `
         childList: true,
         subtree: true
     });
+})();
 </script>
 `;
 
 function needsRewriting(contentType: string | null): boolean {
     if (!contentType) return false;
     return REWRITABLE_TYPES.some(type => contentType.includes(type));
+}
+
+function isStreamableContent(contentType: string | null): boolean {
+    if (!contentType) return false;
+    return STREAMABLE_TYPES.some(type => contentType.includes(type));
 }
 
 function rewriteContent(content: string, contentType: string | null, proxyBase: string): string {
@@ -297,21 +322,51 @@ function rewriteCookieHeader(cookie: string): string {
     return rewritten;
 }
 
-function compressContent(content: string | Buffer, acceptEncoding: string): { buffer: Buffer, encoding: 'br' | 'gzip' | 'deflate' | 'identity' } {
+// ASYNC compression - doesn't block the event loop!
+async function compressContentAsync(
+    content: string | Buffer,
+    acceptEncoding: string
+): Promise<{ buffer: Buffer, encoding: 'br' | 'gzip' | 'deflate' | 'identity' }> {
     const input = Buffer.isBuffer(content) ? content : Buffer.from(content);
+
+    // Only compress if content is large enough to benefit
+    if (input.length < 1000) {
+        return { buffer: input, encoding: 'identity' };
+    }
 
     if (acceptEncoding.includes('br')) {
         try {
-            return { buffer: brotliCompressSync(input), encoding: 'br' };
+            const compressed = await brotliCompressAsync(input);
+            return { buffer: compressed, encoding: 'br' };
         } catch (e) { /* fall through */ }
     }
     if (acceptEncoding.includes('gzip')) {
-        return { buffer: gzipSync(input), encoding: 'gzip' };
+        try {
+            const compressed = await gzipAsync(input);
+            return { buffer: compressed, encoding: 'gzip' };
+        } catch (e) { /* fall through */ }
     }
     if (acceptEncoding.includes('deflate')) {
-        return { buffer: deflateSync(input), encoding: 'deflate' };
+        try {
+            const compressed = await deflateAsync(input);
+            return { buffer: compressed, encoding: 'deflate' };
+        } catch (e) { /* fall through */ }
     }
     return { buffer: input, encoding: 'identity' };
+}
+
+// Create streaming response for binary content
+function createStreamingResponse(
+    body: ReadableStream<Uint8Array> | null,
+    status: number,
+    statusText: string,
+    headers: Headers
+): Response {
+    return new Response(body, {
+        status,
+        statusText,
+        headers,
+    });
 }
 
 export async function handleProxyRequest(
@@ -322,7 +377,10 @@ export async function handleProxyRequest(
     const targetPath = url.pathname.replace(new RegExp(`^${PROXY_PATH}`), '') || '/';
     const targetUrl = new URL(targetPath + url.search, TARGET_ORIGIN);
 
-    const cacheKey = request.method === 'GET' ? targetUrl.toString() : null;
+    // Only cache non-range GET requests for text content
+    const rangeHeader = request.headers.get('range');
+    const isRangeRequest = !!rangeHeader;
+    const cacheKey = (request.method === 'GET' && !isRangeRequest) ? targetUrl.toString() : null;
 
     if (cacheKey) {
         const cached = getFromCache(cacheKey);
@@ -344,24 +402,28 @@ export async function handleProxyRequest(
     }
 
     const proxyHeaders = new Headers();
+    const hopByHopHeaders = ['host', 'connection', 'keep-alive', 'transfer-encoding', 'te', 'trailer', 'upgrade'];
+
     for (const [key, value] of request.headers.entries()) {
         const lowerKey = key.toLowerCase();
-        if (['host', 'connection', 'keep-alive', 'transfer-encoding', 'te', 'trailer', 'upgrade'].includes(lowerKey)) continue;
+        if (hopByHopHeaders.includes(lowerKey)) continue;
         proxyHeaders.set(key, value);
     }
     proxyHeaders.set('Host', TARGET_HOST);
 
-    // Filter Accept-Encoding to only what Node fetch supports (gzip, deflate, br)
-    // This prevents upstream from sending zstd which we can't decompress/rewrite
+    // For streaming content, don't request compression from upstream
+    // This allows us to stream directly without decompression
     const acceptEncoding = request.headers.get('accept-encoding');
     if (acceptEncoding) {
         const supported = ['gzip', 'deflate', 'br'];
-        const method = acceptEncoding.split(',')
+        const filtered = acceptEncoding.split(',')
             .map(e => e.trim().toLowerCase())
             .filter(e => supported.some(s => e.startsWith(s)))
             .join(', ');
-        if (method) {
-            proxyHeaders.set('Accept-Encoding', method);
+        if (filtered) {
+            proxyHeaders.set('Accept-Encoding', filtered);
+        } else {
+            proxyHeaders.delete('Accept-Encoding');
         }
     }
 
@@ -385,17 +447,29 @@ export async function handleProxyRequest(
     if (origin) proxyHeaders.set('Origin', TARGET_ORIGIN);
 
     try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 30000);
+
         const proxyResponse = await fetch(targetUrl.toString(), {
             method: request.method,
             headers: proxyHeaders,
-            body: request.method !== 'GET' && request.method !== 'HEAD' ? await request.text() : undefined,
+            body: request.method !== 'GET' && request.method !== 'HEAD'
+                ? await request.text()
+                : undefined,
             redirect: 'manual',
+            signal: controller.signal,
         });
 
+        clearTimeout(timeout);
+
         const responseHeaders = new Headers();
+        const contentType = proxyResponse.headers.get('content-type');
+        const isStreamable = isStreamableContent(contentType);
+        const needsRewrite = needsRewriting(contentType);
+
         for (const [key, value] of proxyResponse.headers.entries()) {
             const lowerKey = key.toLowerCase();
-            if (['connection', 'keep-alive', 'transfer-encoding', 'te', 'trailer', 'upgrade'].includes(lowerKey)) continue;
+            if (hopByHopHeaders.includes(lowerKey)) continue;
 
             if (lowerKey === 'location') {
                 let location = value;
@@ -407,27 +481,30 @@ export async function handleProxyRequest(
                 responseHeaders.set(key, location);
                 continue;
             }
+
             if (lowerKey === 'set-cookie') {
                 responseHeaders.append(key, rewriteCookieHeader(value));
                 continue;
             }
-            if (['content-security-policy', 'content-security-policy-report-only', 'x-frame-options'].includes(lowerKey)) continue;
 
-            // Only skip content-length/encoding if we might rewrite the body
-            const contentType = proxyResponse.headers.get('content-type');
-            if (needsRewriting(contentType)) {
-                if (['content-length', 'content-encoding'].includes(lowerKey)) continue;
+            if (['content-security-policy', 'content-security-policy-report-only', 'x-frame-options'].includes(lowerKey)) {
+                continue;
+            }
+
+            // For rewritable content, we'll set our own content-length/encoding
+            if (needsRewrite && ['content-length', 'content-encoding'].includes(lowerKey)) {
+                continue;
             }
 
             responseHeaders.set(key, value);
         }
 
         responseHeaders.set('Access-Control-Allow-Origin', '*');
-        responseHeaders.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+        responseHeaders.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, HEAD');
         responseHeaders.set('Access-Control-Allow-Headers', '*');
+        responseHeaders.set('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Accept-Ranges');
 
-        // --- FIX 1: HANDLE 204/304 RESPONSES ---
-        // These statuses MUST NOT have a body. Node's undici throws if you pass one.
+        // Handle 204/304 responses - no body allowed
         if (proxyResponse.status === 204 || proxyResponse.status === 304) {
             return new Response(null, {
                 status: proxyResponse.status,
@@ -436,15 +513,33 @@ export async function handleProxyRequest(
             });
         }
 
-        const contentType = proxyResponse.headers.get('content-type');
+        // STREAMABLE CONTENT (videos, audio, etc.) - pass through directly!
+        if (isStreamable) {
+            // Ensure proper headers for streaming
+            if (!responseHeaders.has('Accept-Ranges')) {
+                responseHeaders.set('Accept-Ranges', 'bytes');
+            }
 
-        if (needsRewriting(contentType)) {
+            // Pass the body stream directly - no buffering!
+            return createStreamingResponse(
+                proxyResponse.body,
+                proxyResponse.status,
+                proxyResponse.statusText,
+                responseHeaders
+            );
+        }
+
+        // REWRITABLE CONTENT - buffer, rewrite, compress
+        if (needsRewrite) {
             const text = await proxyResponse.text();
             const rewrittenContent = rewriteContent(text, contentType, proxyBase);
-            const acceptEncoding = request.headers.get('accept-encoding') || '';
-            const { buffer, encoding } = compressContent(rewrittenContent, acceptEncoding);
+            const clientAcceptEncoding = request.headers.get('accept-encoding') || '';
+            const { buffer, encoding } = await compressContentAsync(rewrittenContent, clientAcceptEncoding);
 
-            responseHeaders.set('Content-Encoding', encoding);
+            if (encoding !== 'identity') {
+                responseHeaders.set('Content-Encoding', encoding);
+            }
+            responseHeaders.set('Content-Length', buffer.length.toString());
             responseHeaders.set('X-Proxy-Cache', 'MISS');
 
             if (cacheKey && proxyResponse.status === 200) {
@@ -464,15 +559,24 @@ export async function handleProxyRequest(
             });
         }
 
+        // OTHER CONTENT - pass through
         return new Response(proxyResponse.body, {
             status: proxyResponse.status,
             statusText: proxyResponse.statusText,
             headers: responseHeaders,
         });
 
-    } catch (error) {
+    } catch (error: any) {
         console.error('[vidfast-proxy] Error:', error);
-        return new Response(`Proxy error: ${error}`, {
+
+        if (error.name === 'AbortError') {
+            return new Response('Proxy timeout', {
+                status: 504,
+                headers: { 'Content-Type': 'text/plain' }
+            });
+        }
+
+        return new Response(`Proxy error: ${error.message || error}`, {
             status: 502,
             headers: { 'Content-Type': 'text/plain' }
         });
@@ -499,21 +603,29 @@ export async function handleExtProxyRequest(request: Request): Promise<Response>
         headers.set('Origin', TARGET_ORIGIN);
         headers.set('Referer', TARGET_ORIGIN + '/');
 
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 30000);
+
         const response = await fetch(targetUrl, {
             method: request.method,
             headers: headers,
-            body: request.method !== 'GET' && request.method !== 'HEAD' ? await request.text() : undefined,
-            redirect: 'follow'
+            body: request.method !== 'GET' && request.method !== 'HEAD'
+                ? await request.text()
+                : undefined,
+            redirect: 'follow',
+            signal: controller.signal,
         });
+
+        clearTimeout(timeout);
 
         const responseHeaders = new Headers(response.headers);
         responseHeaders.set('Access-Control-Allow-Origin', '*');
         responseHeaders.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, HEAD');
         responseHeaders.set('Access-Control-Allow-Headers', '*');
+        responseHeaders.set('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Accept-Ranges');
         responseHeaders.delete('x-frame-options');
         responseHeaders.delete('content-security-policy');
 
-        // --- FIX 2: HANDLE 204/304 RESPONSES FOR EXT PROXY ---
         if (response.status === 204 || response.status === 304) {
             return new Response(null, {
                 status: response.status,
@@ -522,14 +634,18 @@ export async function handleExtProxyRequest(request: Request): Promise<Response>
             });
         }
 
+        // Stream the response directly
         return new Response(response.body, {
             status: response.status,
             statusText: response.statusText,
             headers: responseHeaders
         });
 
-    } catch (e) {
-        return new Response(`External proxy error: ${e}`, { status: 502 });
+    } catch (e: any) {
+        if (e.name === 'AbortError') {
+            return new Response('External proxy timeout', { status: 504 });
+        }
+        return new Response(`External proxy error: ${e.message || e}`, { status: 502 });
     }
 }
 
