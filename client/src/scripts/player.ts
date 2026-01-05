@@ -10,7 +10,7 @@ var fetchUrl = '';
 if (window.location.hostname === 'localhost') {
     fetchUrl = 'http://localhost:3000';
 } else {
-    fetchUrl = '/streamapi';
+    fetchUrl = '/filmapi';
 }
 
 interface Caption {
