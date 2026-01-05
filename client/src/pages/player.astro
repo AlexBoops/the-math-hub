@@ -10,20 +10,12 @@ import Layout from "../layouts/layout.astro";
 
 	<main class="pt-30 p-10 flex items-center justify-center mb-15">
 		<div id="c" class="w-full max-w-7xl h-150">
-			<div>
-				<select
-					id="provider"
-					class="rounded-xl bg-blue-900 text-white px-4 py-2 mb-5 w-full max-w-xs">
-					<option value="vf">VidFast</option>
-				</select>
-			</div>
-
 			<iframe
 				id="player-frame"
 				src=""
 				frameborder="no"
 				allowfullscreen
-				class="w-full h-full rounded-2xl">
+				class="w-full h-full rounded-2xl bg-black">
 			</iframe>
 			<script src="../scripts/cloak"></script>
 			<script src="../scripts/player"></script>

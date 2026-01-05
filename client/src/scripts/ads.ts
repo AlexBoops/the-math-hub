@@ -1,5 +1,7 @@
 
+
 document.addEventListener('DOMContentLoaded', () => {
+
     const adContainer = document.getElementById('ad-container');
     if (!adContainer) return;
 
