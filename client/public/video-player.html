@@ -850,6 +850,7 @@
         let activeCaptionIndex = -1;
         let captionCues = {};
         let nextEpisodeShown = false;
+        let proxyBase = '/filmapi'; // Default proxy base
 
         // DOM Elements
         const playerContainer = document.getElementById('player-container');
@@ -887,6 +888,29 @@
         const nextEpisodeTitle = document.getElementById('next-episode-title');
         const nextEpisodeCountdown = document.getElementById('next-episode-countdown');
 
+        // Transform URLs to use proxy
+        function transformUrl(url) {
+            if (!url) return url;
+
+            // Check if URL contains /api/ and needs to be proxied
+            const apiMatch = url.match(/\/api\/(stream|segment|caption|subtitle)\/.+/);
+            if (apiMatch) {
+                return `${proxyBase}${apiMatch[0]}`;
+            }
+
+            // Handle absolute URLs
+            try {
+                const urlObj = new URL(url);
+                if (urlObj.pathname.startsWith('/api/')) {
+                    return `${proxyBase}${urlObj.pathname}${urlObj.search}`;
+                }
+            } catch (e) {
+                // Not a valid absolute URL
+            }
+
+            return url;
+        }
+
         // Update loader state
         function updateLoader(text, subtext, progress) {
             if (text) loaderText.textContent = text;
@@ -899,6 +923,12 @@
             if (event.data.type === 'INIT_PLAYER') {
                 updateLoader('Loading video...', 'Connecting to stream', 50);
                 videoData = event.data.data;
+
+                // Update proxy base if provided
+                if (videoData.proxyBase) {
+                    proxyBase = videoData.proxyBase;
+                }
+
                 initializePlayer();
             }
         });
@@ -931,12 +961,20 @@
                 nextEpisodeTitle.textContent = `Episode ${videoData.episode + 1}`;
             }
 
-            // Initialize HLS
+            // Initialize HLS with URL transformation
             if (Hls.isSupported()) {
                 hls = new Hls({
                     enableWorker: true,
                     lowLatencyMode: false,
-                    backBufferLength: 90
+                    backBufferLength: 90,
+                    // Transform URLs before loading
+                    xhrSetup: function (xhr, url) {
+                        const transformedUrl = transformUrl(url);
+                        if (transformedUrl !== url) {
+                            console.log('Transforming URL:', url, '->', transformedUrl);
+                            xhr.open('GET', transformedUrl, true);
+                        }
+                    }
                 });
 
                 hls.loadSource(videoData.videoUrl);
@@ -961,6 +999,7 @@
                 });
 
                 hls.on(Hls.Events.ERROR, (event, data) => {
+                    console.error('HLS Error:', data);
                     if (data.fatal) {
                         switch (data.type) {
                             case Hls.ErrorTypes.NETWORK_ERROR:
@@ -996,7 +1035,9 @@
         // Parse VTT file and extract cues
         async function parseVTT(url) {
             try {
-                const response = await fetch(url);
+                // Transform the URL before fetching
+                const transformedUrl = transformUrl(url);
+                const response = await fetch(transformedUrl);
                 const text = await response.text();
                 const cues = [];
 

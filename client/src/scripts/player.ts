@@ -22,10 +22,10 @@ if (window.location.hostname.includes('localhost')) {
 function transformProxyUrl(url: string | null): string | null {
     if (!url) return null;
 
-    // If the URL contains /api/stream/, extract that part and prepend our proxy base
-    const streamMatch = url.match(/\/api\/stream\/.+/);
-    if (streamMatch) {
-        return `${proxyBase}${streamMatch[0]}`;
+    // If the URL contains /api/, extract that part and prepend our proxy base
+    const apiMatch = url.match(/\/api\/.+/);
+    if (apiMatch) {
+        return `${proxyBase}${apiMatch[0]}`;
     }
 
     // If it's already a relative URL starting with /api/, prepend proxy base
@@ -120,7 +120,7 @@ function initializePlayer(data: StreamResponse) {
         language: cap.language,
         label: cap.label,
         name: cap.label,
-        vttUrl: transformProxyUrl(cap.proxyUrl),       // Transform proxy URL
+        vttUrl: transformProxyUrl(cap.proxyUrl),
         hlsUrl: transformProxyUrl(cap.proxyUrl),
         originalUrl: cap.originalUrl
     }));
@@ -129,7 +129,7 @@ function initializePlayer(data: StreamResponse) {
     const transformedStreamUrl = transformProxyUrl(data.firstWorking.streamUrl);
 
     const playerData = {
-        videoUrl: transformedStreamUrl,  // Use transformed URL
+        videoUrl: transformedStreamUrl,
         captions: formattedCaptions,
         title: `Movie ${data.tmdbId}`,
         // Pass TV show info for next episode feature
@@ -138,6 +138,8 @@ function initializePlayer(data: StreamResponse) {
         season: season ? parseInt(season) : null,
         episode: episode ? parseInt(episode) : null,
         currentSource: source,
+        // Pass proxy base for HLS.js URL transformation
+        proxyBase: proxyBase,
         // Optional: pass all working sources for quality switching (with transformed URLs)
         sources: data.workingSources.map(name => ({
             name: name,
