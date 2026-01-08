@@ -8,11 +8,42 @@ const episode = urlParams.get('e') || '';
 const source = urlParams.get('source') || 'stable';
 const trueSource = source === 'stable' ? 'vidrock' : 'vidnest';
 var fetchUrl = '';
+var proxyBase = '';
 
 if (window.location.hostname.includes('localhost')) {
     fetchUrl = 'http://localhost:7676';
+    proxyBase = 'http://localhost:7676';
 } else {
     fetchUrl = '/filmapi';
+    proxyBase = '/filmapi';
+}
+
+// Helper function to transform API URLs to use the proxy
+function transformProxyUrl(url: string | null): string | null {
+    if (!url) return null;
+
+    // If the URL contains /api/stream/, extract that part and prepend our proxy base
+    const streamMatch = url.match(/\/api\/stream\/.+/);
+    if (streamMatch) {
+        return `${proxyBase}${streamMatch[0]}`;
+    }
+
+    // If it's already a relative URL starting with /api/, prepend proxy base
+    if (url.startsWith('/api/')) {
+        return `${proxyBase}${url}`;
+    }
+
+    // If it's an absolute URL with /api/ in it, extract and transform
+    try {
+        const urlObj = new URL(url);
+        if (urlObj.pathname.startsWith('/api/')) {
+            return `${proxyBase}${urlObj.pathname}${urlObj.search}`;
+        }
+    } catch (e) {
+        // Not a valid URL, return as-is
+    }
+
+    return url;
 }
 
 // Source selector logic
@@ -83,19 +114,22 @@ interface StreamResponse {
 playerFrame.src = '/video-player.html';
 
 function initializePlayer(data: StreamResponse) {
-    // Map captions to the format your player expects
+    // Map captions to the format your player expects, transforming URLs
     const formattedCaptions = data.captions.map((cap, index) => ({
         index: index,
         language: cap.language,
         label: cap.label,
         name: cap.label,
-        vttUrl: cap.proxyUrl,
-        hlsUrl: cap.proxyUrl,
+        vttUrl: transformProxyUrl(cap.proxyUrl),       // Transform proxy URL
+        hlsUrl: transformProxyUrl(cap.proxyUrl),
         originalUrl: cap.originalUrl
     }));
 
+    // Transform the stream URL
+    const transformedStreamUrl = transformProxyUrl(data.firstWorking.streamUrl);
+
     const playerData = {
-        videoUrl: data.firstWorking.streamUrl,
+        videoUrl: transformedStreamUrl,  // Use transformed URL
         captions: formattedCaptions,
         title: `Movie ${data.tmdbId}`,
         // Pass TV show info for next episode feature
@@ -104,10 +138,10 @@ function initializePlayer(data: StreamResponse) {
         season: season ? parseInt(season) : null,
         episode: episode ? parseInt(episode) : null,
         currentSource: source,
-        // Optional: pass all working sources for quality switching
+        // Optional: pass all working sources for quality switching (with transformed URLs)
         sources: data.workingSources.map(name => ({
             name: name,
-            url: data.sources[name].proxyUrl,
+            url: transformProxyUrl(data.sources[name].proxyUrl),
             playerUrl: data.sources[name].playerUrl
         }))
     };
