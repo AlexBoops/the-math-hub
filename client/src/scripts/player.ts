@@ -7,6 +7,7 @@ const season = urlParams.get('s') || '';
 const episode = urlParams.get('e') || '';
 const source = urlParams.get('source') || 'stable';
 const trueSource = source === 'stable' ? 'vidrock' : 'vidnest';
+const proxy = source === 'stable' ? '' : '&proxy=true';
 var fetchUrl = '';
 var proxyBase = '';
 
@@ -161,7 +162,7 @@ window.addEventListener('message', (event) => {
     if (event.data.type === 'PLAYER_READY') {
         if (movie) {
             console.log('Loading movie:', id);
-            fetch(`${fetchUrl}/api/${trueSource}?tmdbId=${id}&type=movie`, options)
+            fetch(`${fetchUrl}/api/${trueSource}?tmdbId=${id}&type=movie${proxy}`, options)
                 .then(res => res.json())
                 .then((res: StreamResponse) => {
                     console.log('Movie data:', res);
@@ -175,7 +176,7 @@ window.addEventListener('message', (event) => {
         }
         else if (season && episode) {
             console.log('Loading TV:', id, season, episode);
-            fetch(`${fetchUrl}/api/${trueSource}?tmdbId=${id}&type=tv&season=${season}&episode=${episode}`, options)
+            fetch(`${fetchUrl}/api/${trueSource}?tmdbId=${id}&type=tv&season=${season}&episode=${episode}${proxy}`, options)
                 .then(res => res.json())
                 .then((res: StreamResponse) => {
                     console.log('TV data:', res);
