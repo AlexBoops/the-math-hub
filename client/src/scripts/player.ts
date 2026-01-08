@@ -14,48 +14,70 @@ if (window.location.hostname.includes('localhost')) {
 }
 
 interface Caption {
-    index: number;
-    language: string;
     label: string;
-    name: string;
-    vttUrl: string;
-    hlsUrl: string;
+    language: string;
     originalUrl: string;
+    proxyUrl: string;
+}
+
+interface Source {
+    url: string | null;
+    language: string | null;
+    flag: string | null;
+    working: boolean;
+    reason: string;
+    proxyUrl: string | null;
+    playerUrl: string | null;
+}
+
+interface FirstWorking {
+    player: string;
+    streamUrl: string;
+    playerUrl: string;
 }
 
 interface StreamResponse {
     success: boolean;
-    stream: {
-        streamId: string;
-        video: {
-            proxyUrl: string;
-            originalUrl: string;
-        };
-        captions: Caption[];
-        urls: {
-            videoOnly: string;
-            combined: string;
-            captions: string[];
-        };
-    };
-    data: {
-        title: string;
-        poster: string;
-        backdrop: string;
-    };
+    encryptedId: string;
+    tmdbId: string;
+    type: string;
+    workingCount: number;
+    workingSources: string[];
+    firstWorking: FirstWorking;
+    sources: Record<string, Source>;
+    captionCount: number;
+    captions: Caption[];
 }
 
 // Show the player immediately with loading state
 playerFrame.src = '/video-player.html';
 
 function initializePlayer(data: StreamResponse) {
+    // Map captions to the format your player expects
+    const formattedCaptions = data.captions.map((cap, index) => ({
+        index: index,
+        language: cap.language,
+        label: cap.label,
+        name: cap.label,
+        vttUrl: cap.proxyUrl,       // Use proxy URL for CORS
+        hlsUrl: cap.proxyUrl,
+        originalUrl: cap.originalUrl
+    }));
+
     const playerData = {
-        videoUrl: data.stream.urls.videoOnly,
-        captions: data.stream.captions,
-        title: data.data?.title || '',
+        videoUrl: data.firstWorking.streamUrl,  // ✅ Use firstWorking.streamUrl
+        captions: formattedCaptions,
+        title: `Movie ${data.tmdbId}`,          // API doesn't return title
+        // Optional: pass all working sources for quality switching
+        sources: data.workingSources.map(name => ({
+            name: name,
+            url: data.sources[name].proxyUrl,
+            playerUrl: data.sources[name].playerUrl
+        }))
     };
 
-    // Send data to the player iframe
+    console.log('Initializing player with:', playerData);
+
     playerFrame.contentWindow?.postMessage({
         type: 'INIT_PLAYER',
         data: playerData
@@ -65,17 +87,16 @@ function initializePlayer(data: StreamResponse) {
 // Listen for player ready message
 window.addEventListener('message', (event) => {
     if (event.data.type === 'PLAYER_READY') {
-        // Player is loaded, now fetch the video data
         if (movie) {
             console.log('Loading movie:', id);
             fetch(`${fetchUrl}/api/vidrock?tmdbId=${id}&type=movie`, options)
                 .then(res => res.json())
                 .then((res: StreamResponse) => {
                     console.log('Movie data:', res);
-                    if (res.success) {
+                    if (res.success && res.workingCount > 0) {
                         initializePlayer(res);
                     } else {
-                        console.error('Failed to load movie');
+                        console.error('Failed to load movie - no working sources');
                     }
                 })
                 .catch(err => console.error(err));
@@ -86,10 +107,10 @@ window.addEventListener('message', (event) => {
                 .then(res => res.json())
                 .then((res: StreamResponse) => {
                     console.log('TV data:', res);
-                    if (res.success) {
+                    if (res.success && res.workingCount > 0) {
                         initializePlayer(res);
                     } else {
-                        console.error('Failed to load episode');
+                        console.error('Failed to load episode - no working sources');
                     }
                 })
                 .catch(err => console.error(err));
