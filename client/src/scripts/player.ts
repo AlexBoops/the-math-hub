@@ -7,8 +7,8 @@ const season = urlParams.get('s') || '';
 const episode = urlParams.get('e') || '';
 var fetchUrl = '';
 
-if (window.location.hostname === 'localhost') {
-    fetchUrl = 'http://localhost:3000';
+if (window.location.hostname.includes('localhost')) {
+    fetchUrl = 'http://localhost:7676';
 } else {
     fetchUrl = '/filmapi';
 }
@@ -68,7 +68,7 @@ window.addEventListener('message', (event) => {
         // Player is loaded, now fetch the video data
         if (movie) {
             console.log('Loading movie:', id);
-            fetch(`${fetchUrl}/api/movie/${id}`, options)
+            fetch(`${fetchUrl}/api/vidrock?tmdbId=${id}&type=movie`, options)
                 .then(res => res.json())
                 .then((res: StreamResponse) => {
                     console.log('Movie data:', res);
@@ -82,7 +82,7 @@ window.addEventListener('message', (event) => {
         }
         else if (season && episode) {
             console.log('Loading TV:', id, season, episode);
-            fetch(`${fetchUrl}/api/tv/${id}/${season}/${episode}`, options)
+            fetch(`${fetchUrl}/api/vidrock?tmdbId=${id}&type=tv&season=${season}&episode=${episode}`, options)
                 .then(res => res.json())
                 .then((res: StreamResponse) => {
                     console.log('TV data:', res);
