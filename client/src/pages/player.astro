@@ -10,6 +10,52 @@ import Layout from "../layouts/layout.astro";
 
 	<main class="pt-30 p-10 flex items-center justify-center mb-15">
 		<div id="c" class="w-full max-w-7xl h-150">
+			<!-- Source Selector -->
+			<div class="flex justify-end mb-4">
+				<div
+					class="flex items-center gap-2 bg-gray-800/80 backdrop-blur-sm rounded-xl p-1">
+					<button
+						id="source-stable"
+						class="source-btn px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200"
+						data-source="stable">
+						<span class="flex items-center gap-2">
+							<svg
+								class="w-4 h-4"
+								fill="none"
+								stroke="currentColor"
+								viewBox="0 0 24 24">
+								<path
+									stroke-linecap="round"
+									stroke-linejoin="round"
+									stroke-width="2"
+									d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"
+								></path>
+							</svg>
+							Stable
+						</span>
+					</button>
+					<button
+						id="source-fast"
+						class="source-btn px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200"
+						data-source="fast">
+						<span class="flex items-center gap-2">
+							<svg
+								class="w-4 h-4"
+								fill="none"
+								stroke="currentColor"
+								viewBox="0 0 24 24">
+								<path
+									stroke-linecap="round"
+									stroke-linejoin="round"
+									stroke-width="2"
+									d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+							</svg>
+							Fast
+						</span>
+					</button>
+				</div>
+			</div>
+
 			<iframe
 				id="player-frame"
 				src=""
@@ -20,7 +66,7 @@ import Layout from "../layouts/layout.astro";
 			<script src="../scripts/cloak"></script>
 			<script src="../scripts/player"></script>
 			<h3 class="text-gray-300 text-center m-8">
-				Data provided by TMDb API. The Math Hub doesn’t host movies; we
+				Data provided by TMDb API. The Math Hub doesn't host movies; we
 				only share links. Our site provides links to content hosted by
 				third-party sites, over which we have no control. We take
 				intellectual property rights seriously. If you believe a third
@@ -31,4 +77,20 @@ import Layout from "../layouts/layout.astro";
 			</h3>
 		</div>
 	</main>
+
+	<style>
+		.source-btn {
+			color: #9ca3af;
+			background: transparent;
+		}
+		.source-btn:hover {
+			color: #e5e7eb;
+			background: rgba(255, 255, 255, 0.1);
+		}
+		.source-btn.active {
+			color: #fff;
+			background: linear-gradient(135deg, #0956e5 0%, #6b5bff 100%);
+			box-shadow: 0 4px 15px rgba(9, 86, 229, 0.4);
+		}
+	</style>
 </Layout>

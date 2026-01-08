@@ -60,6 +60,76 @@
             display: none;
         }
 
+        /* Next Episode Button */
+        .next-episode-btn {
+            position: absolute;
+            bottom: 100px;
+            right: 20px;
+            background: linear-gradient(135deg, #0956e5 0%, #6b5bff 100%);
+            color: #fff;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 12px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            z-index: 50;
+            opacity: 0;
+            transform: translateX(100px);
+            transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+            box-shadow: 0 4px 20px rgba(9, 86, 229, 0.5);
+            pointer-events: none;
+        }
+
+        .next-episode-btn.visible {
+            opacity: 1;
+            transform: translateX(0);
+            pointer-events: auto;
+        }
+
+        .next-episode-btn:hover {
+            transform: translateX(0) scale(1.05);
+            box-shadow: 0 6px 25px rgba(9, 86, 229, 0.7);
+        }
+
+        .next-episode-btn svg {
+            width: 20px;
+            height: 20px;
+            fill: currentColor;
+        }
+
+        .next-episode-info {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 2px;
+        }
+
+        .next-episode-label {
+            font-size: 11px;
+            opacity: 0.8;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .next-episode-title {
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .next-episode-countdown {
+            position: absolute;
+            bottom: -25px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.7);
+            white-space: nowrap;
+        }
+
         /* Initial loader - shows before anything loads */
         .initial-loader {
             position: absolute;
@@ -670,6 +740,18 @@
             <span class="caption-text" id="caption-text"></span>
         </div>
 
+        <!-- Next Episode Button (TV only) -->
+        <button class="next-episode-btn" id="next-episode-btn">
+            <div class="next-episode-info">
+                <span class="next-episode-label">Up Next</span>
+                <span class="next-episode-title" id="next-episode-title">Episode 2</span>
+            </div>
+            <svg viewBox="0 0 24 24">
+                <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z" />
+            </svg>
+            <span class="next-episode-countdown" id="next-episode-countdown"></span>
+        </button>
+
         <div class="buffering" id="buffering">
             <div class="buffering-spinner"></div>
         </div>
@@ -767,6 +849,7 @@
         let captionTracks = [];
         let activeCaptionIndex = -1;
         let captionCues = {};
+        let nextEpisodeShown = false;
 
         // DOM Elements
         const playerContainer = document.getElementById('player-container');
@@ -800,6 +883,9 @@
         const fullscreenBtn = document.getElementById('fullscreen-btn');
         const expandIcon = fullscreenBtn.querySelector('.expand-icon');
         const compressIcon = fullscreenBtn.querySelector('.compress-icon');
+        const nextEpisodeBtn = document.getElementById('next-episode-btn');
+        const nextEpisodeTitle = document.getElementById('next-episode-title');
+        const nextEpisodeCountdown = document.getElementById('next-episode-countdown');
 
         // Update loader state
         function updateLoader(text, subtext, progress) {
@@ -839,6 +925,11 @@
             }
 
             updateLoader('Initializing player...', 'Setting up stream', 70);
+
+            // Update next episode button if TV show
+            if (videoData.isTV && videoData.episode) {
+                nextEpisodeTitle.textContent = `Episode ${videoData.episode + 1}`;
+            }
 
             // Initialize HLS
             if (Hls.isSupported()) {
@@ -1057,9 +1148,47 @@
             }
         }
 
+        // Check for next episode timing (TV only)
+        function checkNextEpisode() {
+            if (!videoData || !videoData.isTV || !video.duration) return;
+
+            const remainingTime = video.duration - video.currentTime;
+            const fourMinutes = 4 * 60; // 4 minutes in seconds
+
+            if (remainingTime <= fourMinutes && remainingTime > 0) {
+                if (!nextEpisodeShown) {
+                    nextEpisodeBtn.classList.add('visible');
+                    nextEpisodeShown = true;
+                }
+                // Update countdown
+                const mins = Math.floor(remainingTime / 60);
+                const secs = Math.floor(remainingTime % 60);
+                nextEpisodeCountdown.textContent = `Starts in ${mins}:${secs.toString().padStart(2, '0')}`;
+            } else {
+                nextEpisodeBtn.classList.remove('visible');
+                nextEpisodeShown = false;
+            }
+        }
+
+        // Handle next episode click
+        nextEpisodeBtn.addEventListener('click', () => {
+            if (videoData && videoData.isTV) {
+                window.parent.postMessage({
+                    type: 'NEXT_EPISODE',
+                    data: {
+                        tmdbId: videoData.tmdbId,
+                        season: videoData.season,
+                        episode: videoData.episode,
+                        source: videoData.currentSource || 'stable'
+                    }
+                }, '*');
+            }
+        });
+
         // Update captions on time update
         video.addEventListener('timeupdate', () => {
             updateCaptionDisplay();
+            checkNextEpisode();
 
             // Progress bar
             const progress = (video.currentTime / video.duration) * 100;
@@ -1267,6 +1396,13 @@
                     } else {
                         captionOptions.querySelector('[data-index="-1"]')?.click();
                         showHint('CC Off');
+                    }
+                    break;
+                case 'n':
+                    // Next episode shortcut (TV only)
+                    if (videoData && videoData.isTV && nextEpisodeShown) {
+                        e.preventDefault();
+                        nextEpisodeBtn.click();
                     }
                     break;
             }

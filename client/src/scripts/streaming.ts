@@ -34,7 +34,7 @@ async function searchContent(query: string): Promise<(Movie | TVShow)[]> {
 function createMovieCard(movie: Movie): string {
     const imageUrl = movie.poster_path ? `${TMDB_IMAGE_BASE}${movie.poster_path}` : '/img/place2.png';
     return `
-        <div class="show-card glass cursor-pointer transform transition-transform" data-link="/player?type=movie&id=${movie.id}">
+        <div class="show-card glass cursor-pointer transform transition-transform" data-link="/player?type=movie&id=${movie.id}&source=stable">
             <img 
                 src="${imageUrl}" 
                 alt="${movie.title} poster" 
@@ -62,7 +62,7 @@ function createTVCard(show: TVShow): string {
 function createSearchResultCard(item: any): string {
     const title = item.title || item.name;
     const imageUrl = item.poster_path ? `${TMDB_IMAGE_BASE}${item.poster_path}` : '/img/place2.png';
-    const dataAttr = item.media_type === 'tv' ? `data-tv-id="${item.id}"` : `data-link="/player?type=movie&id=${item.id}"`;
+    const dataAttr = item.media_type === 'tv' ? `data-tv-id="${item.id}"` : `data-link="/player?type=movie&id=${item.id}&source=stable"`;
     return `
         <div class="show-card glass cursor-pointer transform transition-transform" ${dataAttr}>
             <img 
@@ -147,7 +147,7 @@ async function showTVModal(tvId: number) {
             episodesContainer.innerHTML = epData.episodes.map((ep: any) => {
                 const imgUrl = ep.still_path ? `${TMDB_IMAGE_BASE}${ep.still_path}` : '/img/place2.png';
                 return `
-                    <div class="game-card glass cursor-pointer" data-episode-link="/player?type=tv&id=${tvId}&s=${season}&e=${ep.episode_number}">
+                    <div class="game-card glass cursor-pointer" data-episode-link="/player?type=tv&id=${tvId}&s=${season}&e=${ep.episode_number}&source=stable">
                         <img src="${imgUrl}" alt="${ep.name}" class="game-image">
                         <h3 class="text-white font-medium text-lg">E${ep.episode_number}: ${ep.name}</h3>
                     </div>

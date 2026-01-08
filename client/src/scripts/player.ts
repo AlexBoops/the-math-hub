@@ -5,6 +5,8 @@ const movie = urlParams.get('type') === 'movie';
 const id = urlParams.get('id');
 const season = urlParams.get('s') || '';
 const episode = urlParams.get('e') || '';
+const source = urlParams.get('source') || 'stable';
+const trueSource = source === 'stable' ? 'vidrock' : 'vidnest';
 var fetchUrl = '';
 
 if (window.location.hostname.includes('localhost')) {
@@ -12,6 +14,34 @@ if (window.location.hostname.includes('localhost')) {
 } else {
     fetchUrl = '/filmapi';
 }
+
+// Source selector logic
+const stableBtn = document.getElementById('source-stable');
+const fastBtn = document.getElementById('source-fast');
+
+function updateSourceButtons() {
+    if (source === 'stable') {
+        stableBtn?.classList.add('active');
+        fastBtn?.classList.remove('active');
+    } else {
+        fastBtn?.classList.add('active');
+        stableBtn?.classList.remove('active');
+    }
+}
+
+function switchSource(newSource: string) {
+    if (newSource === source) return;
+
+    const newParams = new URLSearchParams(window.location.search);
+    newParams.set('source', newSource);
+    window.location.search = newParams.toString();
+}
+
+stableBtn?.addEventListener('click', () => switchSource('stable'));
+fastBtn?.addEventListener('click', () => switchSource('fast'));
+
+// Initialize source buttons on load
+updateSourceButtons();
 
 interface Caption {
     label: string;
@@ -59,15 +89,21 @@ function initializePlayer(data: StreamResponse) {
         language: cap.language,
         label: cap.label,
         name: cap.label,
-        vttUrl: cap.proxyUrl,       // Use proxy URL for CORS
+        vttUrl: cap.proxyUrl,
         hlsUrl: cap.proxyUrl,
         originalUrl: cap.originalUrl
     }));
 
     const playerData = {
-        videoUrl: data.firstWorking.streamUrl,  // ✅ Use firstWorking.streamUrl
+        videoUrl: data.firstWorking.streamUrl,
         captions: formattedCaptions,
-        title: `Movie ${data.tmdbId}`,          // API doesn't return title
+        title: `Movie ${data.tmdbId}`,
+        // Pass TV show info for next episode feature
+        isTV: !movie,
+        tmdbId: id,
+        season: season ? parseInt(season) : null,
+        episode: episode ? parseInt(episode) : null,
+        currentSource: source,
         // Optional: pass all working sources for quality switching
         sources: data.workingSources.map(name => ({
             name: name,
@@ -89,7 +125,7 @@ window.addEventListener('message', (event) => {
     if (event.data.type === 'PLAYER_READY') {
         if (movie) {
             console.log('Loading movie:', id);
-            fetch(`${fetchUrl}/api/vidrock?tmdbId=${id}&type=movie`, options)
+            fetch(`${fetchUrl}/api/${trueSource}?tmdbId=${id}&type=movie`, options)
                 .then(res => res.json())
                 .then((res: StreamResponse) => {
                     console.log('Movie data:', res);
@@ -103,7 +139,7 @@ window.addEventListener('message', (event) => {
         }
         else if (season && episode) {
             console.log('Loading TV:', id, season, episode);
-            fetch(`${fetchUrl}/api/vidrock?tmdbId=${id}&type=tv&season=${season}&episode=${episode}`, options)
+            fetch(`${fetchUrl}/api/${trueSource}?tmdbId=${id}&type=tv&season=${season}&episode=${episode}`, options)
                 .then(res => res.json())
                 .then((res: StreamResponse) => {
                     console.log('TV data:', res);
@@ -115,5 +151,12 @@ window.addEventListener('message', (event) => {
                 })
                 .catch(err => console.error(err));
         }
+    }
+
+    // Handle next episode request from player
+    if (event.data.type === 'NEXT_EPISODE') {
+        const { tmdbId, season, episode, source } = event.data.data;
+        const nextEpisode = episode + 1;
+        window.location.href = `/player?type=tv&id=${tmdbId}&s=${season}&e=${nextEpisode}&source=${source}`;
     }
 });
