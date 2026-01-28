@@ -27,10 +27,28 @@ document.addEventListener('DOMContentLoaded', () => {
         `;
         adContent.appendChild(script1);
 
-        // Create invoke.js script
+        // Create invoke.js script with proxy fallback
         const script2 = document.createElement('script');
         script2.type = 'text/javascript';
-        script2.src = 'https://thieflamppost.com/0b4f29943f8825bf9a2e81a67765af8b/invoke.js';
+
+        // Try proxy first, fallback to direct URL on error
+        const proxyUrl = '/api/ad-proxy';
+        const directUrl = 'https://thieflamppost.com/0b4f29943f8825bf9a2e81a67765af8b/invoke.js';
+
+        script2.src = proxyUrl;
+
+        // Fallback to direct URL if proxy fails
+        script2.onerror = () => {
+            console.warn('Ad proxy failed, falling back to direct URL');
+            const fallbackScript = document.createElement('script');
+            fallbackScript.type = 'text/javascript';
+            fallbackScript.src = directUrl;
+            fallbackScript.onerror = () => {
+                console.error('Both ad proxy and direct URL failed');
+            };
+            adContent.appendChild(fallbackScript);
+        };
+
         adContent.appendChild(script2);
     }
 
