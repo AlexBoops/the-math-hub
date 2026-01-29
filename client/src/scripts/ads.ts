@@ -31,23 +31,29 @@ document.addEventListener('DOMContentLoaded', () => {
         const script2 = document.createElement('script');
         script2.type = 'text/javascript';
 
-        // Try proxy first, fallback to direct URL on error
-        const proxyUrl = '/api/ad-proxy';
-        const directUrl = 'https://thieflamppost.com/0b4f29943f8825bf9a2e81a67765af8b/invoke.js';
+        const localads = true;
 
-        script2.src = proxyUrl;
+        if (localads) {
+            script2.src = '/ads.js';
+        } else {
+            // Try proxy first, fallback to direct URL on error
+            const proxyUrl = '/api/ad-proxy';
+            const directUrl = 'https://thieflamppost.com/0b4f29943f8825bf9a2e81a67765af8b/invoke.js';
 
-        // Fallback to direct URL if proxy fails
-        script2.onerror = () => {
-            console.warn('Ad proxy failed, falling back to direct URL');
-            const fallbackScript = document.createElement('script');
-            fallbackScript.type = 'text/javascript';
-            fallbackScript.src = directUrl;
-            fallbackScript.onerror = () => {
-                console.error('Both ad proxy and direct URL failed');
+            script2.src = proxyUrl;
+
+            // Fallback to direct URL if proxy fails
+            script2.onerror = () => {
+                console.warn('Ad proxy failed, falling back to direct URL');
+                const fallbackScript = document.createElement('script');
+                fallbackScript.type = 'text/javascript';
+                fallbackScript.src = directUrl;
+                fallbackScript.onerror = () => {
+                    console.error('Both ad proxy and direct URL failed');
+                };
+                adContent.appendChild(fallbackScript);
             };
-            adContent.appendChild(fallbackScript);
-        };
+        }
 
         adContent.appendChild(script2);
     }

@@ -5,7 +5,7 @@ export const GET: APIRoute = async ({ request }) => {
 
     try {
         // Get the origin from the request or use a default
-        const origin = request.headers.get('origin') || 'https://themathshub.com';
+        const origin = request.headers.get('origin') || 'https://mathclass.404.mn';
 
         // Fetch the ad script from the original source with browser-like headers
         const response = await fetch(AD_SCRIPT_URL, {
